@@ -154,3 +154,70 @@ describe('POST /auth/login', () => {
         expect(res.body).toHaveProperty('message', 'Missing required fields');
     });
 });
+
+describe('GET /auth/me', () => {
+    let testUser;
+    let cookie;
+
+    beforeEach(async () => {
+        const hashedPassword = await bcrypt.hash('password123', 10);
+        testUser = await User.create({
+            username: 'testuser',
+            email: 'test@example.com',
+            password: hashedPassword,
+            fullName: { firstName: 'Test', lastName: 'User' }
+        });
+
+        // Log in to get the authentication cookie
+        const res = await request(app)
+            .post('/auth/login')
+            .send({
+                username: 'testuser',
+                password: 'password123'
+            });
+        
+        cookie = res.headers['set-cookie'];
+    });
+
+    it('should return the current user details successfully when authenticated', async () => {
+        const res = await request(app)
+            .get('/auth/me')
+            .set('Cookie', cookie);
+
+        expect(res.statusCode).toEqual(200);
+        expect(res.body).toHaveProperty('user');
+        expect(res.body.user).toHaveProperty('username', 'testuser');
+        expect(res.body.user).toHaveProperty('email', 'test@example.com');
+        expect(res.body.user).not.toHaveProperty('password');
+    });
+
+    it('should return 401 Unauthorized when no cookie/token is provided', async () => {
+        const res = await request(app)
+            .get('/auth/me');
+
+        expect(res.statusCode).toEqual(401);
+        expect(res.body).toHaveProperty('message');
+    });
+
+    it('should return 401 Unauthorized when an invalid cookie/token is provided', async () => {
+        const res = await request(app)
+            .get('/auth/me')
+            .set('Cookie', ['accessToken=invalidtoken123']);
+
+        expect(res.statusCode).toEqual(401);
+        expect(res.body).toHaveProperty('message');
+    });
+
+    it('should return 404 User Not Found if the user from the token does not exist in the database', async () => {
+        // Delete the user from the database
+        await User.deleteOne({ _id: testUser._id });
+
+        const res = await request(app)
+            .get('/auth/me')
+            .set('Cookie', cookie);
+
+        expect(res.statusCode).toEqual(404);
+        expect(res.body).toHaveProperty('message');
+    });
+});
+

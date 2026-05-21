@@ -1,5 +1,6 @@
 const User = require('../models/user.model');
 const bcrypt = require('bcrypt');
+const { cookie } = require('express-validator');
 const jwt = require('jsonwebtoken');
 
 const registerUser = async (req, res) => {
@@ -110,7 +111,23 @@ const loginUser = async (req, res) => {
     }
 }
 
+const getCurrentUser = async (req,res) => {
+    try {
+        const user = req.user;
+        if(!user){
+            return res.status(404).json({message:"User not found"})
+        }
+        const userResponse = user.toObject();
+        delete userResponse.password;
+        return res.status(200).json({message:"User found successfully",user:userResponse})
+    } catch (error) {
+        console.log(error);
+        return res.status(500).json({message:"Internal server error"});
+    }
+}
+
 module.exports = {
     registerUser,
-    loginUser
+    loginUser,
+    getCurrentUser
 };
