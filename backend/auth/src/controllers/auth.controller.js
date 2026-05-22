@@ -2,6 +2,7 @@ const User = require('../models/user.model');
 const bcrypt = require('bcrypt');
 const { cookie } = require('express-validator');
 const jwt = require('jsonwebtoken');
+const redis = require('../db/redis');
 
 const registerUser = async (req, res) => {
     try {
@@ -75,10 +76,10 @@ const loginUser = async (req, res) => {
             return res.status(404).json({ message: "User not found" })
         }
 
-        const comparePassword= await bcrypt.compare(password,user.password);
+        const comparePassword = await bcrypt.compare(password, user.password);
 
-        if(!comparePassword){
-            return res.status(401).json({message:"Invalid Password"});
+        if (!comparePassword) {
+            return res.status(401).json({ message: "Invalid Password" });
         }
 
         const accessToken = jwt.sign(
@@ -107,27 +108,48 @@ const loginUser = async (req, res) => {
 
     } catch (error) {
         console.log(error);
-        return res.status(500).json({message:"Internal server error"});
+        return res.status(500).json({ message: "Internal server error" });
     }
 }
 
-const getCurrentUser = async (req,res) => {
+const getCurrentUser = async (req, res) => {
     try {
         const user = req.user;
-        if(!user){
-            return res.status(404).json({message:"User not found"})
+        if (!user) {
+            return res.status(404).json({ message: "User not found" })
         }
         const userResponse = user.toObject();
         delete userResponse.password;
-        return res.status(200).json({message:"User found successfully",user:userResponse})
+        return res.status(200).json({ message: "User found successfully", user: userResponse })
     } catch (error) {
         console.log(error);
-        return res.status(500).json({message:"Internal server error"});
+        return res.status(500).json({ message: "Internal server error" });
     }
 }
+const logoutUser = async (req, res) => {
+    try {
+        const token = req.cookies.accessToken;
+
+        if (token) {
+            await redis.set(`blacklisted:${token}`, true, 'EX', 3 * 24 * 60 * 60);
+        }
+
+        res.clearCookie('accessToken', {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'strict'
+        });
+
+        return res.status(200).json({ message: 'User logged out successfully' });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
 
 module.exports = {
     registerUser,
     loginUser,
-    getCurrentUser
+    getCurrentUser,
+    logoutUser
 };

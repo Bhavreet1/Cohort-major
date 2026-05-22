@@ -1,6 +1,29 @@
 const request = require('supertest');
 const mongoose = require('mongoose');
 const { MongoMemoryServer } = require('mongodb-memory-server');
+
+const mockRedisStore = {};
+
+jest.mock('ioredis', () => {
+    return {
+        Redis: jest.fn().mockImplementation(() => {
+            return {
+                on: jest.fn(),
+                set: jest.fn().mockImplementation((key, value) => {
+                    mockRedisStore[key] = value;
+                    return Promise.resolve('OK');
+                }),
+                get: jest.fn().mockImplementation((key) => {
+                    return Promise.resolve(mockRedisStore[key] || null);
+                }),
+                quit: jest.fn().mockResolvedValue('OK'),
+                disconnect: jest.fn().mockResolvedValue('OK')
+            };
+        })
+    };
+});
+
+
 const app = require('../src/app');
 const User = require('../src/models/user.model');
 const bcrypt = require('bcrypt');
@@ -8,7 +31,7 @@ const bcrypt = require('bcrypt');
 let mongoServer;
 
 beforeAll(async () => {
-    
+
     mongoServer = await MongoMemoryServer.create();
     const uri = mongoServer.getUri();
     process.env.MONGODB_URI = uri;
@@ -44,7 +67,7 @@ describe('Auth API', () => {
                         lastName: 'User'
                     }
                 });
-            
+
             expect(res.statusCode).toEqual(201);
             expect(res.body).toHaveProperty('message', 'User registered successfully');
             expect(res.body).toHaveProperty('user');
@@ -78,14 +101,14 @@ describe('Auth API', () => {
             expect(res.statusCode).toEqual(409);
             expect(res.body).toHaveProperty('message', 'User already exists');
         });
-        
+
         it('should return 400 if required fields are missing', async () => {
             const res = await request(app)
                 .post('/auth/register')
                 .send({
                     username: 'testuser'
                 });
-            
+
             expect(res.statusCode).toEqual(400);
             expect(res.body).toHaveProperty('message', 'Missing required fields');
         });
@@ -111,7 +134,7 @@ describe('POST /auth/login', () => {
                 username: 'testuser',
                 password: 'password123'
             });
-        
+
         expect(res.statusCode).toEqual(200);
         expect(res.body).toHaveProperty('message', 'User logged in successfully');
         expect(res.body).toHaveProperty('user');
@@ -126,7 +149,7 @@ describe('POST /auth/login', () => {
                 username: 'testuser',
                 password: 'wrongpassword'
             });
-        
+
         expect(res.statusCode).toEqual(401);
         expect(res.body).toHaveProperty('message', 'Invalid Password');
     });
@@ -138,7 +161,7 @@ describe('POST /auth/login', () => {
                 username: 'nonexistentuser',
                 password: 'password123'
             });
-        
+
         expect(res.statusCode).toEqual(404);
         expect(res.body).toHaveProperty('message', 'User not found');
     });
@@ -149,7 +172,7 @@ describe('POST /auth/login', () => {
             .send({
                 username: 'testuser'
             });
-        
+
         expect(res.statusCode).toEqual(400);
         expect(res.body).toHaveProperty('message', 'Missing required fields');
     });
@@ -175,7 +198,7 @@ describe('GET /auth/me', () => {
                 username: 'testuser',
                 password: 'password123'
             });
-        
+
         cookie = res.headers['set-cookie'];
     });
 
@@ -220,4 +243,82 @@ describe('GET /auth/me', () => {
         expect(res.body).toHaveProperty('message');
     });
 });
+
+describe('POST /auth/logout', () => {
+    let testUser;
+    let cookie;
+
+    beforeEach(async () => {
+        const hashedPassword = await bcrypt.hash('password123', 10);
+        testUser = await User.create({
+            username: 'testuser',
+            email: 'test@example.com',
+            password: hashedPassword,
+            fullName: { firstName: 'Test', lastName: 'User' }
+        });
+
+        // Log in to get the authentication cookie
+        const res = await request(app)
+            .post('/auth/login')
+            .send({
+                username: 'testuser',
+                password: 'password123'
+            });
+
+        cookie = res.headers['set-cookie'];
+    });
+
+    it('should logout a user successfully when authenticated', async () => {
+        const res = await request(app)
+            .post('/auth/logout')
+            .set('Cookie', cookie);
+
+        expect(res.statusCode).toEqual(200);
+        expect(res.body).toHaveProperty('message', 'User logged out successfully');
+
+        // Ensure the cookie is cleared
+        expect(res.headers['set-cookie']).toBeDefined();
+        const setCookieString = res.headers['set-cookie'].join(' ');
+        expect(setCookieString).toContain('accessToken=;');
+    });
+
+    it('should return 401 Unauthorized when no cookie/token is provided', async () => {
+        const res = await request(app)
+            .post('/auth/logout');
+
+        expect(res.statusCode).toEqual(401);
+        expect(res.body).toHaveProperty('message', 'Unauthorized');
+    });
+
+    it('should return 401 Unauthorized when an invalid cookie/token is provided', async () => {
+        const res = await request(app)
+            .post('/auth/logout')
+            .set('Cookie', ['accessToken=invalidtoken123']);
+
+        expect(res.statusCode).toEqual(401);
+        expect(res.body).toHaveProperty('message', 'Unauthorized');
+    });
+
+    it('should blacklist the token on logout and reject subsequent requests with that token', async () => {
+        // 1. Verify we can access /auth/me successfully first
+        const meResBefore = await request(app)
+            .get('/auth/me')
+            .set('Cookie', cookie);
+        expect(meResBefore.statusCode).toEqual(200);
+
+        // 2. Perform logout to blacklist the token
+        const logoutRes = await request(app)
+            .post('/auth/logout')
+            .set('Cookie', cookie);
+        expect(logoutRes.statusCode).toEqual(200);
+
+        // 3. Try to access /auth/me again with the same cookie; it should now return 401 Unauthorized
+        const meResAfter = await request(app)
+            .get('/auth/me')
+            .set('Cookie', cookie);
+        expect(meResAfter.statusCode).toEqual(401);
+        expect(meResAfter.body).toHaveProperty('message', 'Unauthorized');
+    });
+});
+
 
