@@ -62,4 +62,33 @@ const loginUserValidations = [
     respondWithValidationErrors
 ]
 
-module.exports = {registerUserValidations,loginUserValidations};
+const addAddressValidations = [
+    body('street')
+        .isString()
+        .withMessage('Street must be a string')
+        .notEmpty()
+        .withMessage('Street is required'),
+    body('city')
+        .isString()
+        .withMessage('City must be a string')
+        .notEmpty()
+        .withMessage('City is required'),
+    body('state')
+        .isString()
+        .withMessage('State must be a string')
+        .notEmpty()
+        .withMessage('State is required'),
+    body('zipCode')
+        .isString()
+        .withMessage('Zip code must be a string')
+        .notEmpty()
+        .withMessage('Zip code is required'),
+    body('country')
+        .isString()
+        .withMessage('Country must be a string')
+        .notEmpty()
+        .withMessage('Country is required'),
+    respondWithValidationErrors
+]
+
+module.exports = {registerUserValidations,loginUserValidations,addAddressValidations};

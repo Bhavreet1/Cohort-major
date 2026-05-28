@@ -321,4 +321,235 @@ describe('POST /auth/logout', () => {
     });
 });
 
+describe('Address Endpoints', () => {
+    let testUser;
+    let cookie;
+
+    beforeEach(async () => {
+        const hashedPassword = await bcrypt.hash('password123', 10);
+        testUser = await User.create({
+            username: 'testuser',
+            email: 'test@example.com',
+            password: hashedPassword,
+            fullName: { firstName: 'Test', lastName: 'User' },
+            addresses: [
+                {
+                    street: '123 Main St',
+                    city: 'Springfield',
+                    state: 'IL',
+                    zipCode: '62701',
+                    country: 'USA'
+                }
+            ]
+        });
+
+        // Log in to get the authentication cookie
+        const res = await request(app)
+            .post('/auth/login')
+            .send({
+                username: 'testuser',
+                password: 'password123'
+            });
+
+        cookie = res.headers['set-cookie'];
+    });
+
+    describe('GET /auth/users/me/address', () => {
+        it('should retrieve address array for an authenticated user', async () => {
+            const res = await request(app)
+                .get('/auth/users/me/address')
+                .set('Cookie', cookie);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body).toHaveProperty('message', 'User address found successfully');
+            expect(res.body).toHaveProperty('address');
+            expect(Array.isArray(res.body.address)).toBe(true);
+            expect(res.body.address.length).toEqual(1);
+            expect(res.body.address[0]).toHaveProperty('street', '123 Main St');
+        });
+
+        it('should return 401 Unauthorized when no cookie/token is provided', async () => {
+            const res = await request(app)
+                .get('/auth/users/me/address');
+
+            expect(res.statusCode).toEqual(401);
+            expect(res.body).toHaveProperty('message', 'Unauthorized');
+        });
+
+        it('should return 401 Unauthorized when an invalid cookie/token is provided', async () => {
+            const res = await request(app)
+                .get('/auth/users/me/address')
+                .set('Cookie', ['accessToken=invalidtoken123']);
+
+            expect(res.statusCode).toEqual(401);
+            expect(res.body).toHaveProperty('message', 'Unauthorized');
+        });
+    });
+
+    describe('POST /auth/users/me/address', () => {
+        it('should add a valid address successfully', async () => {
+            const newAddress = {
+                street: '456 Oak Rd',
+                city: 'Metropolis',
+                state: 'NY',
+                zipCode: '10001',
+                country: 'USA'
+            };
+
+            const res = await request(app)
+                .post('/auth/users/me/address')
+                .set('Cookie', cookie)
+                .send(newAddress);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body).toHaveProperty('message', 'Address added successfully');
+            expect(res.body).toHaveProperty('address');
+            expect(res.body.address).toHaveProperty('street', '456 Oak Rd');
+            expect(res.body).toHaveProperty('addresses');
+            expect(res.body.addresses.length).toEqual(2);
+
+            // Verify in Database
+            const userInDb = await User.findById(testUser._id);
+            expect(userInDb.addresses.length).toEqual(2);
+            expect(userInDb.addresses[1]).toHaveProperty('street', '456 Oak Rd');
+        });
+
+        it('should return 401 Unauthorized when unauthenticated', async () => {
+            const newAddress = {
+                street: '456 Oak Rd',
+                city: 'Metropolis',
+                state: 'NY',
+                zipCode: '10001',
+                country: 'USA'
+            };
+
+            const res = await request(app)
+                .post('/auth/users/me/address')
+                .send(newAddress);
+
+            expect(res.statusCode).toEqual(401);
+            expect(res.body).toHaveProperty('message', 'Unauthorized');
+        });
+
+        it('should return 400 Bad Request if required fields are missing', async () => {
+            const incompleteAddress = {
+                street: '456 Oak Rd',
+                city: 'Metropolis'
+                // missing state, zipCode, country
+            };
+
+            const res = await request(app)
+                .post('/auth/users/me/address')
+                .set('Cookie', cookie)
+                .send(incompleteAddress);
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message', 'Missing required fields');
+            expect(res.body).toHaveProperty('errors');
+            expect(res.body.errors.length).toBeGreaterThan(0);
+        });
+
+        it('should return 400 Bad Request if fields are of invalid data type (empty strings)', async () => {
+            const invalidAddress = {
+                street: '',
+                city: 'Metropolis',
+                state: 'NY',
+                zipCode: '10001',
+                country: 'USA'
+            };
+
+            const res = await request(app)
+                .post('/auth/users/me/address')
+                .set('Cookie', cookie)
+                .send(invalidAddress);
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message', 'Missing required fields');
+        });
+    });
+
+    describe('DELETE /auth/users/me/address/:addressId', () => {
+        it('should delete an existing address successfully by ID', async () => {
+            const addressId = testUser.addresses[0]._id.toString();
+
+            const res = await request(app)
+                .delete(`/auth/users/me/address/${addressId}`)
+                .set('Cookie', cookie);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body).toHaveProperty('message', 'Address deleted successfully');
+            expect(res.body).toHaveProperty('addresses');
+            expect(res.body.addresses.length).toEqual(0);
+
+            // Verify in Database
+            const userInDb = await User.findById(testUser._id);
+            expect(userInDb.addresses.length).toEqual(0);
+        });
+
+        it('should return 401 Unauthorized when unauthenticated', async () => {
+            const addressId = testUser.addresses[0]._id.toString();
+
+            const res = await request(app)
+                .delete(`/auth/users/me/address/${addressId}`);
+
+            expect(res.statusCode).toEqual(401);
+            expect(res.body).toHaveProperty('message', 'Unauthorized');
+        });
+
+        it('should return 404 Not Found if the address ID does not exist', async () => {
+            const nonExistentId = new mongoose.Types.ObjectId().toString();
+
+            const res = await request(app)
+                .delete(`/auth/users/me/address/${nonExistentId}`)
+                .set('Cookie', cookie);
+
+            expect(res.statusCode).toEqual(404);
+            expect(res.body).toHaveProperty('message', 'Address not found');
+        });
+
+        it('should return 400 Bad Request if the address ID format is invalid', async () => {
+            const invalidId = 'invalid-mongo-id';
+
+            const res = await request(app)
+                .delete(`/auth/users/me/address/${invalidId}`)
+                .set('Cookie', cookie);
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message', 'Invalid Address ID format');
+        });
+
+        it('should not allow deleting another user\'s address', async () => {
+            // Create another user with an address
+            const otherUser = await User.create({
+                username: 'otheruser',
+                email: 'other@example.com',
+                password: 'password123',
+                fullName: { firstName: 'Other', lastName: 'User' },
+                addresses: [
+                    {
+                        street: '789 Pine Ave',
+                        city: 'Gotham',
+                        state: 'NJ',
+                        zipCode: '07001',
+                        country: 'USA'
+                    }
+                ]
+            });
+            const otherAddressId = otherUser.addresses[0]._id.toString();
+
+            // Attempt to delete other user's address using testUser's session
+            const res = await request(app)
+                .delete(`/auth/users/me/address/${otherAddressId}`)
+                .set('Cookie', cookie);
+
+            expect(res.statusCode).toEqual(404);
+            expect(res.body).toHaveProperty('message', 'Address not found');
+
+            // Verify in Database that the other user's address still exists
+            const otherUserInDb = await User.findById(otherUser._id);
+            expect(otherUserInDb.addresses.length).toEqual(1);
+        });
+    });
+});
+
 

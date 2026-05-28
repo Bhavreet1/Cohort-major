@@ -3,6 +3,7 @@ const bcrypt = require('bcrypt');
 const { cookie } = require('express-validator');
 const jwt = require('jsonwebtoken');
 const redis = require('../db/redis');
+const mongoose = require('mongoose');
 
 const registerUser = async (req, res) => {
     try {
@@ -126,6 +127,7 @@ const getCurrentUser = async (req, res) => {
         return res.status(500).json({ message: "Internal server error" });
     }
 }
+
 const logoutUser = async (req, res) => {
     try {
         const token = req.cookies.accessToken;
@@ -147,9 +149,78 @@ const logoutUser = async (req, res) => {
     }
 };
 
+const getUserAddress = async (req, res) => {
+    try {
+        const id = req.user.id;
+        const user = await User.findById(id).select("addresses");
+        if (!user) {
+            return res.status(404).json({ message: "User not found" })
+        }
+        return res.status(200).json({ message: "User address found successfully", address: user.addresses })
+    } catch (err) {
+        console.log(err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+}
+
+const addAddress = async (req, res) => {
+    try {
+        const { street, city, state, zipCode, country } = req.body;
+        const user = req.user;
+
+        user.addresses.push({ street, city, state, zipCode, country });
+        await user.save();
+
+        return res.status(200).json({
+            message: "Address added successfully",
+            address: user.addresses[user.addresses.length - 1],
+            addresses: user.addresses
+        });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+const deleteAddress = async (req, res) => {
+    try {
+        const { addressId } = req.params;
+        const user = req.user;
+
+        if (!mongoose.Types.ObjectId.isValid(addressId)) {
+            return res.status(400).json({ message: "Invalid Address ID format" });
+        }
+
+        let address;
+        try {
+            address = user.addresses.id(addressId);
+        } catch (err) {
+            return res.status(400).json({ message: "Invalid Address ID format" });
+        }
+
+        if (!address) {
+            return res.status(404).json({ message: "Address not found" });
+        }
+
+        user.addresses.pull(addressId);
+        await user.save();
+
+        return res.status(200).json({
+            message: "Address deleted successfully",
+            addresses: user.addresses
+        });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 module.exports = {
     registerUser,
     loginUser,
     getCurrentUser,
-    logoutUser
+    logoutUser,
+    getUserAddress,
+    addAddress,
+    deleteAddress
 };
