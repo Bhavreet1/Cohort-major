@@ -337,7 +337,7 @@ describe('Address Endpoints', () => {
                     street: '123 Main St',
                     city: 'Springfield',
                     state: 'IL',
-                    zipCode: '62701',
+                    zipCode: '627010',
                     country: 'USA'
                 }
             ]
@@ -392,7 +392,7 @@ describe('Address Endpoints', () => {
                 street: '456 Oak Rd',
                 city: 'Metropolis',
                 state: 'NY',
-                zipCode: '10001',
+                zipCode: '100012',
                 country: 'USA'
             };
 
