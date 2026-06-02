@@ -13,19 +13,16 @@ const uploadImages = async (files,folder="/cohort/products")=>{
             return [];
         }
         
-        const uploadedImages = [];
-        for (const file of files) {
-            const response = await imagekit.files.upload({
+        
+        //uploading images together
+        const uploadPromises = files.map((file)=>{
+            return imagekit.files.upload({
                 file: file.buffer.toString('base64'),
                 fileName: crypto.randomUUID() + "-" + file.originalname,
                 folder: folder,
             });
-            uploadedImages.push({
-                url: response.url,
-                thumbnail: response.thumbnailUrl,
-                id: response.fileId
-            });
-        }
+        });
+        const uploadedImages = await Promise.all(uploadPromises);
         return uploadedImages;
     } catch (error) {
         if (process.env.NODE_ENV !== 'test') {
