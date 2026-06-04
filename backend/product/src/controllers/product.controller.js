@@ -43,6 +43,56 @@ const createProduct = async (req, res) => {
     }
 };
 
+const getAllProducts = async (req, res) => {
+    try {
+        const filter = {};
+        const { q, limit = 20, minPrice, maxPrice, skip = 0 } = req.query;
+        
+        if (q) {
+            filter.$text = { $search: q };
+        }
+        if (minPrice) {
+            filter['price.amount'] = { $gte: Number(minPrice) };
+        }
+        if (maxPrice) {
+            filter['price.amount'] = {$lte: Number(maxPrice)};
+        }
+
+        const products = await productModel.find(filter).limit(Math.min(20, Number(limit))).skip(Math.min(20, Number(skip)));
+        res.status(200).json({
+            message: "Products fetched successfully",
+            products
+        });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+}
+
+const getProduct = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ message: 'Invalid product ID format' });
+        }
+
+        const product = await productModel.findById(id);
+
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
+        res.status(200).json({
+            message: 'Product fetched successfully',
+            product
+        });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+}
+
 module.exports = {
-    createProduct
+    createProduct,
+    getAllProducts,
+    getProduct
 };
