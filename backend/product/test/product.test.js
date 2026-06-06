@@ -937,6 +937,332 @@ describe('Product API - PATCH /api/product/:id', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/product/seller  –  Seller's Product List
+// Filters all products down to those owned by a specific seller.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("Product API - GET /api/product/seller (Seller's Product List)", () => {
+    const sellerA = new mongoose.Types.ObjectId();
+    const sellerB = new mongoose.Types.ObjectId();
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    /** Insert an arbitrary number of products owned by the given seller. */
+    const seedProductsForSeller = async (sellerId, count = 3, overrides = {}) => {
+        const docs = Array.from({ length: count }, (_, i) => ({
+            title:       `Seller Product ${i + 1}`,
+            description: `Description ${i + 1}`,
+            price:       { amount: (i + 1) * 100, currency: 'INR' },
+            stock:       { quantity: 10 + i },
+            seller:      sellerId,
+            varaints:    ['Default'],
+            ...overrides,
+        }));
+        return await Product.insertMany(docs);
+    };
+
+    /**
+     * GET /api/product/seller as the given seller.
+     * The test-mode auth middleware reads x-test-seller-id header to set req.seller.
+     * Optional query string (e.g. '?limit=5&skip=2') can be appended via extraQuery.
+     */
+    const getSellerProducts = (sellerId, extraQuery = '') =>
+        request(app)
+            .get(`/api/product/seller${extraQuery}`)
+            .set('x-test-seller-id', sellerId.toString());
+
+    // ── SUCCESS CASES ────────────────────────────────────────────────────────
+    describe('Success Cases', () => {
+        it('should return 200 and only products belonging to the requested seller', async () => {
+            await seedProductsForSeller(sellerA, 3);
+            await seedProductsForSeller(sellerB, 2);
+
+            const res = await getSellerProducts(sellerA);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body).toHaveProperty('message');
+            expect(res.body).toHaveProperty('products');
+            expect(Array.isArray(res.body.products)).toBe(true);
+            expect(res.body.products.length).toBe(3);
+
+            // Every returned product must belong to sellerA only
+            for (const p of res.body.products) {
+                expect(p.seller.toString()).toEqual(sellerA.toString());
+            }
+        });
+
+        it('should return an empty array when the seller has no products', async () => {
+            // Seed products for sellerB only — sellerA has none
+            await seedProductsForSeller(sellerB, 2);
+
+            const res = await getSellerProducts(sellerA);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.products).toEqual([]);
+        });
+
+        it('should return all products when the DB has only one seller', async () => {
+            await seedProductsForSeller(sellerA, 4);
+
+            const res = await getSellerProducts(sellerA);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.products.length).toBe(4);
+        });
+
+        it('should return the correct product shape for each item in the list', async () => {
+            await seedProductsForSeller(sellerA, 1);
+
+            const res = await getSellerProducts(sellerA);
+
+            expect(res.statusCode).toEqual(200);
+            const p = res.body.products[0];
+            expect(p).toHaveProperty('_id');
+            expect(p).toHaveProperty('title');
+            expect(p).toHaveProperty('price');
+            expect(p.price).toHaveProperty('amount');
+            expect(p.price).toHaveProperty('currency');
+            expect(p).toHaveProperty('stock');
+            expect(p.stock).toHaveProperty('quantity');
+            expect(p).toHaveProperty('seller');
+            expect(p).toHaveProperty('varaints');
+        });
+
+        it('should not return products that belong to a different seller', async () => {
+            await seedProductsForSeller(sellerA, 2);
+            await seedProductsForSeller(sellerB, 3);
+
+            const res = await getSellerProducts(sellerB);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.products.length).toBe(3);
+            for (const p of res.body.products) {
+                expect(p.seller.toString()).toEqual(sellerB.toString());
+                expect(p.seller.toString()).not.toEqual(sellerA.toString());
+            }
+        });
+
+        it('should return a single product when the seller has exactly one product', async () => {
+            await seedProductsForSeller(sellerA, 1);
+
+            const res = await getSellerProducts(sellerA);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.products.length).toBe(1);
+            expect(res.body.products[0].seller.toString()).toEqual(sellerA.toString());
+        });
+
+        it('should return an empty array when the DB is completely empty', async () => {
+            const res = await getSellerProducts(sellerA);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.products).toEqual([]);
+        });
+    });
+
+    // ── PAGINATION CASES ─────────────────────────────────────────────────────
+    describe('Pagination Cases', () => {
+        it('should respect the limit parameter and return at most that many products', async () => {
+            await seedProductsForSeller(sellerA, 10);
+
+            const res = await getSellerProducts(sellerA, '?limit=5');
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.products.length).toBeLessThanOrEqual(5);
+        });
+
+        it('should cap the limit at 20 even when a larger value is requested', async () => {
+            await seedProductsForSeller(sellerA, 25);
+
+            const res = await getSellerProducts(sellerA, '?limit=30');
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.products.length).toBeLessThanOrEqual(20);
+        });
+
+        it('should skip the correct number of products for the given seller', async () => {
+            await seedProductsForSeller(sellerA, 5);
+
+            const allRes  = await getSellerProducts(sellerA);
+            const firstId = allRes.body.products[0]._id;
+
+            const skippedRes = await getSellerProducts(sellerA, '?skip=1');
+
+            expect(skippedRes.statusCode).toEqual(200);
+            expect(skippedRes.body.products.length).toBe(4);
+            const returnedIds = skippedRes.body.products.map((p) => p._id);
+            expect(returnedIds).not.toContain(firstId);
+        });
+
+        it("should return an empty array when skip exceeds the seller's product count", async () => {
+            await seedProductsForSeller(sellerA, 3);
+
+            const res = await getSellerProducts(sellerA, '?skip=10');
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.products).toEqual([]);
+        });
+    });
+
+    // ── COMBINATION FILTER CASES ─────────────────────────────────────────────
+    describe('Combination Filter Cases (seller + query params)', () => {
+        it('should filter by seller AND minPrice simultaneously', async () => {
+            await Product.insertMany([
+                { title: 'Cheap A',  price: { amount: 50,  currency: 'INR' }, stock: { quantity: 5 }, seller: sellerA, varaints: ['X'] },
+                { title: 'Pricey A', price: { amount: 800, currency: 'INR' }, stock: { quantity: 5 }, seller: sellerA, varaints: ['X'] },
+                { title: 'Pricey B', price: { amount: 900, currency: 'INR' }, stock: { quantity: 5 }, seller: sellerB, varaints: ['Y'] },
+            ]);
+
+            const res = await getSellerProducts(sellerA, '?minPrice=100');
+
+            expect(res.statusCode).toEqual(200);
+            const titles = res.body.products.map((p) => p.title);
+            expect(titles).toContain('Pricey A');
+            expect(titles).not.toContain('Cheap A');   // below minPrice
+            expect(titles).not.toContain('Pricey B');  // wrong seller
+        });
+
+        it('should filter by seller AND maxPrice simultaneously', async () => {
+            await Product.insertMany([
+                { title: 'Budget A',  price: { amount: 100,  currency: 'INR' }, stock: { quantity: 5 }, seller: sellerA, varaints: ['X'] },
+                { title: 'Premium A', price: { amount: 2000, currency: 'INR' }, stock: { quantity: 5 }, seller: sellerA, varaints: ['X'] },
+                { title: 'Budget B',  price: { amount: 200,  currency: 'INR' }, stock: { quantity: 5 }, seller: sellerB, varaints: ['Y'] },
+            ]);
+
+            const res = await getSellerProducts(sellerA, '?maxPrice=500');
+
+            expect(res.statusCode).toEqual(200);
+            const titles = res.body.products.map((p) => p.title);
+            expect(titles).toContain('Budget A');
+            expect(titles).not.toContain('Premium A');  // above maxPrice
+            expect(titles).not.toContain('Budget B');   // wrong seller
+        });
+
+        it('should filter by seller, limit, and skip together correctly', async () => {
+            await seedProductsForSeller(sellerA, 8);
+            await seedProductsForSeller(sellerB, 3);
+
+            const res = await getSellerProducts(sellerA, '?limit=3&skip=2');
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.products.length).toBeLessThanOrEqual(3);
+            for (const p of res.body.products) {
+                expect(p.seller.toString()).toEqual(sellerA.toString());
+            }
+        });
+    });
+
+    // ── AUTH / IDENTITY CASES ────────────────────────────────────────────────
+    describe('Auth & Identity Cases', () => {
+        it('should return an empty list (not an error) for a valid seller with no products', async () => {
+            const ghostSeller = new mongoose.Types.ObjectId();
+            await seedProductsForSeller(sellerA, 2); // other seller has products
+
+            const res = await getSellerProducts(ghostSeller);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.products).toEqual([]);
+        });
+
+        it('seller B cannot see seller A products — each seller sees only their own', async () => {
+            await seedProductsForSeller(sellerA, 3);
+            await seedProductsForSeller(sellerB, 2);
+
+            const resA = await getSellerProducts(sellerA);
+            const resB = await getSellerProducts(sellerB);
+
+            expect(resA.statusCode).toEqual(200);
+            expect(resB.statusCode).toEqual(200);
+            expect(resA.body.products.length).toBe(3);
+            expect(resB.body.products.length).toBe(2);
+
+            const allSellerAIds = resA.body.products.map((p) => p.seller.toString());
+            const allSellerBIds = resB.body.products.map((p) => p.seller.toString());
+            expect(allSellerAIds.every((id) => id === sellerA.toString())).toBe(true);
+            expect(allSellerBIds.every((id) => id === sellerB.toString())).toBe(true);
+        });
+    });
+
+    // ── ERROR CASES ──────────────────────────────────────────────────────────
+    describe('Error Cases', () => {
+        it('should return 500 when the database throws synchronously during the query', async () => {
+            jest.spyOn(Product, 'find').mockImplementationOnce(() => {
+                throw new Error('DB seller query failure');
+            });
+
+            const res = await getSellerProducts(sellerA);
+
+            expect(res.statusCode).toEqual(500);
+            expect(res.body).toHaveProperty('message');
+            expect(res.body.message).toBe('DB seller query failure');
+        });
+
+        it('should return 500 when the database throws asynchronously during the query', async () => {
+            // Controller chain is: find({seller}).skip(n).limit(n)
+            jest.spyOn(Product, 'find').mockReturnValueOnce({
+                skip:  jest.fn().mockReturnThis(),
+                limit: jest.fn().mockRejectedValue(new Error('Async DB failure')),
+            });
+
+            const res = await getSellerProducts(sellerA);
+
+            expect(res.statusCode).toEqual(500);
+            expect(res.body).toHaveProperty('message');
+        });
+    });
+
+    // ── ISOLATION / SIDE-EFFECT CASES ────────────────────────────────────────
+    describe('Isolation & Data Integrity', () => {
+        it('should not mutate existing products when querying the seller list', async () => {
+            const products = await seedProductsForSeller(sellerA, 2);
+
+            await getSellerProducts(sellerA);
+
+            // Products must be unchanged after the GET request
+            for (const original of products) {
+                const inDb = await Product.findById(original._id);
+                expect(inDb).not.toBeNull();
+                expect(inDb.title).toEqual(original.title);
+                expect(inDb.price.amount).toEqual(original.price.amount);
+            }
+        });
+
+        it('should reflect a newly added product immediately in subsequent list calls', async () => {
+            await seedProductsForSeller(sellerA, 2);
+
+            const before = await getSellerProducts(sellerA);
+            expect(before.body.products.length).toBe(2);
+
+            // Add a third product
+            await Product.create({
+                title:    'Brand New',
+                price:    { amount: 999, currency: 'INR' },
+                stock:    { quantity: 5 },
+                seller:   sellerA,
+                varaints: ['One'],
+            });
+
+            const after = await getSellerProducts(sellerA);
+            expect(after.body.products.length).toBe(3);
+        });
+
+        it('should reflect a deleted product immediately in subsequent list calls', async () => {
+            const docs = await seedProductsForSeller(sellerA, 3);
+
+            const before = await getSellerProducts(sellerA);
+            expect(before.body.products.length).toBe(3);
+
+            // Remove one product directly from DB
+            await Product.findByIdAndDelete(docs[0]._id);
+
+            const after = await getSellerProducts(sellerA);
+            expect(after.body.products.length).toBe(2);
+            const afterIds = after.body.products.map((p) => p._id);
+            expect(afterIds).not.toContain(docs[0]._id.toString());
+        });
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DELETE /api/product/:id
 // Rule: only the seller who originally created the product may delete it.
 // ─────────────────────────────────────────────────────────────────────────────

@@ -227,6 +227,32 @@ const deleteProduct = async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 }
+const getSellerProduct = async (req, res) => {
+    try {
+        const { skip = 0, limit = 20, minPrice, maxPrice } = req.query;
+
+        const filter = { seller: req.seller };
+
+        if (minPrice) {
+            filter['price.amount'] = { $gte: Number(minPrice) };
+        }
+        if (maxPrice) {
+            filter['price.amount'] = { $lte: Number(maxPrice) };
+        }
+
+        const products = await productModel
+            .find(filter)
+            .skip(Number(skip))
+            .limit(Math.min(20, Number(limit)));
+
+        return res.status(200).json({
+            message: 'Products fetched successfully',
+            products
+        });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+}
 
 
 module.exports = {
@@ -234,5 +260,6 @@ module.exports = {
     getAllProducts,
     getProduct,
     updateProduct,
-    deleteProduct
+    deleteProduct,
+    getSellerProduct
 };

@@ -5,8 +5,13 @@ function createAuthMiddleware (roles=['user']){
         if (process.env.NODE_ENV === 'test') {
             req.user = { role: 'admin' };
             req.role = 'admin';
+            // Body-based seller (used by POST/PATCH/DELETE tests)
             if (req.body && req.body.seller) {
                 req.seller = req.body.seller;
+            }
+            // Header-based seller (used by GET tests that cannot send a body)
+            if (!req.seller && req.headers['x-test-seller-id']) {
+                req.seller = req.headers['x-test-seller-id'];
             }
             return next();
         }
