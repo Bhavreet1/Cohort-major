@@ -555,3 +555,555 @@ describe('Product API - GET /api/product/:id', () => {
         });
     });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/product/:id  –  Update Product
+// Rule: only the seller who originally created the product may update it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Product API - PATCH /api/product/:id', () => {
+    // Two distinct seller IDs used across tests
+    const ownerSellerId   = new mongoose.Types.ObjectId();
+    const foreignSellerId = new mongoose.Types.ObjectId();
+
+    /**
+     * Helper – inserts a product owned by `ownerSellerId` and returns the doc.
+     */
+    const createProductInDb = async (overrides = {}) => {
+        return await Product.create({
+            title:       'Original Title',
+            description: 'Original description',
+            price:       { amount: 1000, currency: 'INR' },
+            stock:       { quantity: 20 },
+            seller:      ownerSellerId,
+            varaints:    ['Black', 'White'],
+            ...overrides,
+        });
+    };
+
+    /**
+     * The auth middleware (in test mode) reads req.body.seller to set req.seller.
+     * We send `_sellerId` in the body so the middleware can populate req.seller,
+     * then delete it inside the controller so it is never written to the DB.
+     *
+     * For a seller role we pass role='seller'; for admin we pass role='admin'.
+     * (The test-mode auth middleware currently hard-codes role='admin', so tests
+     *  that need a seller context rely on the controller/middleware reading
+     *  req.body.seller for ownership checks.)
+     */
+    const patchAs = (sellerId) =>
+        request(app)
+            .patch(`/api/product/PLACEHOLDER`) // overridden per call
+            .set('x-test-seller-id', sellerId.toString()); // custom header read by auth stub
+
+    // ── convenience wrappers ────────────────────────────────────────────────
+
+    /**
+     * Send a PATCH request as the given seller, with the given body.
+     * The `seller` field in the body is used by the test-mode auth middleware
+     * to set req.seller (ownership identity).
+     */
+    const patchProduct = (productId, sellerId, body = {}) =>
+        request(app)
+            .patch(`/api/product/${productId}`)
+            .send({ ...body, seller: sellerId.toString() });
+
+    // ── SUCCESS CASES ───────────────────────────────────────────────────────
+    describe('Success Cases', () => {
+        it('should return 200 and update the title when the owner sends a valid request', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                title: 'Updated Title',
+            });
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body).toHaveProperty('message');
+            expect(res.body).toHaveProperty('product');
+            expect(res.body.product.title).toEqual('Updated Title');
+
+            // Verify the DB was actually updated
+            const updated = await Product.findById(product._id);
+            expect(updated.title).toEqual('Updated Title');
+        });
+
+        it('should return 200 and update the price when the owner sends valid price data', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                price: { amount: 2500, currency: 'USD' },
+            });
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.product.price.amount).toEqual(2500);
+            expect(res.body.product.price.currency).toEqual('USD');
+
+            const updated = await Product.findById(product._id);
+            expect(updated.price.amount).toEqual(2500);
+            expect(updated.price.currency).toEqual('USD');
+        });
+
+        it('should return 200 and update the stock quantity', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                stock: { quantity: 99 },
+            });
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.product.stock.quantity).toEqual(99);
+
+            const updated = await Product.findById(product._id);
+            expect(updated.stock.quantity).toEqual(99);
+        });
+
+        it('should return 200 and update varaints', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                varaints: ['Red', 'Blue', 'Green'],
+            });
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.product.varaints).toEqual(
+                expect.arrayContaining(['Red', 'Blue', 'Green'])
+            );
+
+            const updated = await Product.findById(product._id);
+            expect(updated.varaints).toContain('Red');
+        });
+
+        it('should return 200 and update the description', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                description: 'Brand-new description text',
+            });
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.product.description).toEqual('Brand-new description text');
+        });
+
+        it('should allow a partial update – only provided fields change, others stay intact', async () => {
+            const product = await createProductInDb({ title: 'Keep Me', description: 'Keep Me Too' });
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                description: 'Changed Description',
+            });
+
+            expect(res.statusCode).toEqual(200);
+            // Title must remain unchanged
+            expect(res.body.product.title).toEqual('Keep Me');
+            // Description must be updated
+            expect(res.body.product.description).toEqual('Changed Description');
+        });
+
+        it('should allow a full update of all fields at once', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                title:       'Completely New Title',
+                description: 'Completely new desc',
+                price:       { amount: 5000, currency: 'USD' },
+                stock:       { quantity: 100 },
+                varaints:    ['XL', 'XXL'],
+            });
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.product.title).toEqual('Completely New Title');
+            expect(res.body.product.price.amount).toEqual(5000);
+            expect(res.body.product.stock.quantity).toEqual(100);
+            expect(res.body.product.varaints).toContain('XL');
+        });
+
+        it('should upload new images and update the images array when owner provides files', async () => {
+            mockUpload.mockResolvedValue({
+                url:          'https://ik.imagekit.io/test/updated_image.jpg',
+                thumbnailUrl: 'https://ik.imagekit.io/test/tr:h-100/updated_image.jpg',
+                fileId:       'updated_file_id_001',
+            });
+
+            const product = await createProductInDb();
+
+            const res = await request(app)
+                .patch(`/api/product/${product._id}`)
+                .field('seller', ownerSellerId.toString())
+                .attach('images', Buffer.from('new-image-binary'), 'new_image.jpg');
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body.product.images.length).toBeGreaterThan(0);
+            expect(res.body.product.images[0]).toHaveProperty('url');
+            expect(mockUpload).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    // ── OWNERSHIP / AUTHORISATION CASES ────────────────────────────────────
+    describe('Ownership Enforcement – only creator can update', () => {
+        it('should return 404 when a different seller tries to update the product', async () => {
+            const product = await createProductInDb(); // owned by ownerSellerId
+
+            // foreignSellerId is NOT the owner — findOne({ _id, seller }) returns null → 404
+            const res = await patchProduct(product._id, foreignSellerId, {
+                title: 'Hijacked Title',
+            });
+
+            expect(res.statusCode).toEqual(404);
+            expect(res.body).toHaveProperty('message', 'Product not found');
+            // Title must NOT have changed
+            const unchanged = await Product.findById(product._id);
+            expect(unchanged.title).toEqual('Original Title');
+        });
+
+        it('should return 403 when no seller ID is provided at all', async () => {
+            const product = await createProductInDb();
+
+            // Send update without a seller field
+            const res = await request(app)
+                .patch(`/api/product/${product._id}`)
+                .send({ title: 'No Seller Attack' });
+
+            expect(res.statusCode).toEqual(403);
+        });
+
+        it('should NOT allow the owner to change the seller field to another ID', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                // Attempt to transfer ownership
+                seller: foreignSellerId.toString(),
+            });
+
+            // The API should either reject this (403/400) or silently ignore the seller field
+            // Either way the DB seller should remain ownerSellerId
+            const unchanged = await Product.findById(product._id);
+            expect(unchanged.seller.toString()).toEqual(ownerSellerId.toString());
+        });
+
+        it('should return 403 when seller ID is an empty string', async () => {
+            const product = await createProductInDb();
+
+            const res = await request(app)
+                .patch(`/api/product/${product._id}`)
+                .send({ title: 'Attack', seller: '' });
+
+            expect(res.statusCode).toEqual(403);
+        });
+    });
+
+    // ── NOT FOUND CASES ─────────────────────────────────────────────────────
+    describe('Not Found Cases', () => {
+        it('should return 404 when the product ID does not exist in the DB', async () => {
+            const nonExistentId = new mongoose.Types.ObjectId();
+
+            const res = await patchProduct(nonExistentId, ownerSellerId, {
+                title: 'Ghost Update',
+            });
+
+            expect(res.statusCode).toEqual(404);
+            expect(res.body).toHaveProperty('message', 'Product not found');
+        });
+
+        it('should return 404 after the product has been deleted', async () => {
+            const product = await createProductInDb();
+            await Product.findByIdAndDelete(product._id);
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                title: 'Update After Delete',
+            });
+
+            expect(res.statusCode).toEqual(404);
+            expect(res.body).toHaveProperty('message', 'Product not found');
+        });
+    });
+
+    // ── VALIDATION CASES ────────────────────────────────────────────────────
+    describe('Validation Cases', () => {
+        it('should return 400 for a non-ObjectId string as the product ID', async () => {
+            const res = await request(app)
+                .patch('/api/product/not-a-valid-id')
+                .send({ seller: ownerSellerId.toString(), title: 'Test' });
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message');
+        });
+
+        it('should return 400 for a short numeric string as the product ID', async () => {
+            const res = await request(app)
+                .patch('/api/product/12345')
+                .send({ seller: ownerSellerId.toString(), title: 'Test' });
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message');
+        });
+
+        it('should return 400 if price amount is set to a negative number', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                price: { amount: -50, currency: 'INR' },
+            });
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message');
+        });
+
+        it('should return 400 if stock quantity is set to a negative number', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                stock: { quantity: -1 },
+            });
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message');
+        });
+
+        it('should return 400 if price currency is not INR or USD', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                price: { currency: 'EUR' },
+            });
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message');
+        });
+
+        it('should return 400 if varaints is set to an empty array', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                varaints: [],
+            });
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message');
+        });
+
+        it('should return 400 if title is set to an empty string', async () => {
+            const product = await createProductInDb();
+
+            const res = await patchProduct(product._id, ownerSellerId, {
+                title: '',
+            });
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message');
+        });
+    });
+
+    // ── ERROR / EDGE CASES ───────────────────────────────────────────────────
+    describe('Error Cases', () => {
+        it('should return 500 when the database throws during findOne', async () => {
+            const validId = new mongoose.Types.ObjectId();
+
+            // Controller uses findOne (not findById) — spy on the correct method
+            jest.spyOn(Product, 'findOne').mockRejectedValueOnce(
+                new Error('DB update failure')
+            );
+
+            const res = await patchProduct(validId, ownerSellerId, {
+                title: 'Crash Test',
+            });
+
+            expect(res.statusCode).toEqual(500);
+            expect(res.body).toHaveProperty('message', 'DB update failure');
+        });
+
+        it('should return 500 when ImageKit upload fails during an image update', async () => {
+            mockUpload.mockRejectedValue(new Error('ImageKit service down'));
+
+            const product = await createProductInDb();
+
+            const res = await request(app)
+                .patch(`/api/product/${product._id}`)
+                .field('seller', ownerSellerId.toString())
+                .attach('images', Buffer.from('broken-binary'), 'broken.jpg');
+
+            expect(res.statusCode).toEqual(500);
+            expect(res.body).toHaveProperty('message');
+            expect(res.body.message).toContain('ImageKit');
+        });
+
+        it('should not alter unrelated products when one product is updated', async () => {
+            const productA = await createProductInDb({ title: 'Product A' });
+            const productB = await createProductInDb({ title: 'Product B' });
+
+            await patchProduct(productA._id, ownerSellerId, { title: 'Product A Updated' });
+
+            const unchangedB = await Product.findById(productB._id);
+            expect(unchangedB.title).toEqual('Product B');
+        });
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/product/:id
+// Rule: only the seller who originally created the product may delete it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Product API - DELETE /api/product/:id', () => {
+    const ownerSellerId   = new mongoose.Types.ObjectId();
+    const foreignSellerId = new mongoose.Types.ObjectId();
+
+    // Helper – insert a product owned by ownerSellerId
+    const createProductInDb = async (overrides = {}) => {
+        return await Product.create({
+            title:       'Delete Test Product',
+            description: 'Product to be deleted',
+            price:       { amount: 1500, currency: 'INR' },
+            stock:       { quantity: 30 },
+            seller:      ownerSellerId,
+            varaints:    ['Small', 'Large'],
+            ...overrides,
+        });
+    };
+
+    // Helper – send DELETE as a given seller
+    // The test-mode auth middleware reads req.body.seller to set req.seller
+    const deleteProduct = (productId, sellerId) =>
+        request(app)
+            .delete(`/api/product/${productId}`)
+            .send({ seller: sellerId.toString() });
+
+    // ── SUCCESS CASES ────────────────────────────────────────────────────────
+    describe('Success Cases', () => {
+        it('should return 200 and remove the product when the owner deletes it', async () => {
+            const product = await createProductInDb();
+
+            const res = await deleteProduct(product._id, ownerSellerId);
+
+            expect(res.statusCode).toEqual(200);
+            expect(res.body).toHaveProperty('message');
+
+            // Product must be gone from the DB
+            const deleted = await Product.findById(product._id);
+            expect(deleted).toBeNull();
+        });
+
+        it('should return the deleted product details in the response', async () => {
+            const product = await createProductInDb({ title: 'Confirm Deleted Doc' });
+
+            const res = await deleteProduct(product._id, ownerSellerId);
+
+            expect(res.statusCode).toEqual(200);
+            // Response should echo back the deleted document
+            expect(res.body).toHaveProperty('product');
+            expect(res.body.product._id).toEqual(product._id.toString());
+            expect(res.body.product.title).toEqual('Confirm Deleted Doc');
+        });
+
+        it('should not remove any other products when one is deleted', async () => {
+            const productA = await createProductInDb({ title: 'Keep A' });
+            const productB = await createProductInDb({ title: 'Delete B' });
+
+            await deleteProduct(productB._id, ownerSellerId);
+
+            // Product A must still exist
+            const stillExists = await Product.findById(productA._id);
+            expect(stillExists).not.toBeNull();
+            expect(stillExists.title).toEqual('Keep A');
+        });
+    });
+
+    // ── OWNERSHIP / AUTHORISATION CASES ─────────────────────────────────────
+    describe('Ownership Enforcement – only creator can delete', () => {
+        it('should return 404 when a different seller tries to delete the product', async () => {
+            const product = await createProductInDb();
+
+            // foreignSellerId does not own this product
+            const res = await deleteProduct(product._id, foreignSellerId);
+
+            expect(res.statusCode).toEqual(404);
+            expect(res.body).toHaveProperty('message', 'Product not found');
+
+            // Product must still exist in the DB
+            const stillExists = await Product.findById(product._id);
+            expect(stillExists).not.toBeNull();
+        });
+
+        it('should return 403 when no seller ID is provided', async () => {
+            const product = await createProductInDb();
+
+            const res = await request(app)
+                .delete(`/api/product/${product._id}`)
+                .send({});  // no seller field
+
+            expect(res.statusCode).toEqual(403);
+
+            // Product must still exist
+            const stillExists = await Product.findById(product._id);
+            expect(stillExists).not.toBeNull();
+        });
+
+        it('should return 403 when seller ID is an empty string', async () => {
+            const product = await createProductInDb();
+
+            const res = await request(app)
+                .delete(`/api/product/${product._id}`)
+                .send({ seller: '' });
+
+            expect(res.statusCode).toEqual(403);
+        });
+    });
+
+    // ── NOT FOUND CASES ──────────────────────────────────────────────────────
+    describe('Not Found Cases', () => {
+        it('should return 404 when the product ID does not exist in the DB', async () => {
+            const nonExistentId = new mongoose.Types.ObjectId();
+
+            const res = await deleteProduct(nonExistentId, ownerSellerId);
+
+            expect(res.statusCode).toEqual(404);
+            expect(res.body).toHaveProperty('message', 'Product not found');
+        });
+
+        it('should return 404 when trying to delete an already-deleted product (idempotency)', async () => {
+            const product = await createProductInDb();
+
+            // First delete succeeds
+            await deleteProduct(product._id, ownerSellerId);
+
+            // Second delete on the same ID
+            const res = await deleteProduct(product._id, ownerSellerId);
+
+            expect(res.statusCode).toEqual(404);
+            expect(res.body).toHaveProperty('message', 'Product not found');
+        });
+    });
+
+    // ── VALIDATION CASES ─────────────────────────────────────────────────────
+    describe('Validation Cases', () => {
+        it('should return 400 for a non-ObjectId string as the product ID', async () => {
+            const res = await request(app)
+                .delete('/api/product/not-a-valid-id')
+                .send({ seller: ownerSellerId.toString() });
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message', 'Invalid product ID format');
+        });
+
+        it('should return 400 for a short numeric string as the product ID', async () => {
+            const res = await request(app)
+                .delete('/api/product/12345')
+                .send({ seller: ownerSellerId.toString() });
+
+            expect(res.statusCode).toEqual(400);
+            expect(res.body).toHaveProperty('message', 'Invalid product ID format');
+        });
+    });
+
+    // ── ERROR CASES ──────────────────────────────────────────────────────────
+    describe('Error Cases', () => {
+        it('should return 500 when the database throws during findOne', async () => {
+            const validId = new mongoose.Types.ObjectId();
+
+            jest.spyOn(Product, 'findOne').mockRejectedValueOnce(
+                new Error('DB delete failure')
+            );
+
+            const res = await deleteProduct(validId, ownerSellerId);
+
+            expect(res.statusCode).toEqual(500);
+            expect(res.body).toHaveProperty('message', 'DB delete failure');
+        });
+    });
+});
